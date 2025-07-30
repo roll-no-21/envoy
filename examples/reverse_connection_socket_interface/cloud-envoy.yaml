@@ -29,6 +29,8 @@ static_resources:
                           prefix: '/'
                         route:
                           cluster: reverse_connection_cluster
+                upgrade_configs:
+                  - upgrade_type: connect
                 http_filters:
                   # Filter that services reverse conn APIs
                   - name: envoy.filters.http.reverse_conn
@@ -63,6 +65,8 @@ static_resources:
                             prefix: '/'
                           route:
                             cluster: reverse_connection_cluster
+                upgrade_configs:
+                  - upgrade_type: connect
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:

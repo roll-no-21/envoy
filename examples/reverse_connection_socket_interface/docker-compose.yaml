@@ -29,12 +29,23 @@ services:
     depends_on:
       - xds-server
       - on-prem-service
+      - on-prem-websocket-service
       - on-prem-grpc-service
 
   on-prem-service:
     image: nginxdemos/hello:plain-text
     networks:
       - envoy-network
+
+  # WebSocket backend service
+  on-prem-websocket-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.websocket
+    networks:
+      - envoy-network
+    ports:
+      - "8080:8080"
 
   # New gRPC backend service
   on-prem-grpc-service:
