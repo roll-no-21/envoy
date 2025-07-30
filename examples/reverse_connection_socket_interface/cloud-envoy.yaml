@@ -23,8 +23,10 @@ static_resources:
                     domains:
                       - "*"
                     routes:
+                      # Route all requests to reverse connection cluster
+                      # Path-based routing will happen on the on-prem side
                       - match:
-                          prefix: '/on_prem_service'
+                          prefix: '/'
                         route:
                           cluster: reverse_connection_cluster
                 http_filters:
@@ -55,8 +57,10 @@ static_resources:
                       domains:
                         - "*"
                       routes:
+                        # Route all requests to reverse connection cluster
+                        # Path-based routing will happen on the on-prem side
                         - match:
-                            prefix: "/on_prem_service"
+                            prefix: '/'
                           route:
                             cluster: reverse_connection_cluster
                 http_filters:

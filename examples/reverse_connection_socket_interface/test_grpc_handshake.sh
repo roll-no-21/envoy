@@ -90,7 +90,7 @@ fi
 # Start On-Premises Envoy (Initiator) 
 echo "🏢 Starting On-Premises Envoy (gRPC Initiator)..."
 "${ENVOY_BINARY}" \
-    -c examples/reverse_connection_socket_interface/on-prem-envoy-grpc.yaml \
+    -c examples/reverse_connection_socket_interface/on-prem-envoy-custom-resolver.yaml \
     --concurrency 1 --use-dynamic-base-id -l trace \
     > /tmp/on-prem-envoy.log 2>&1 &
 ONPREM_PID=$!
@@ -115,7 +115,7 @@ echo "   Sending test request via reverse tunnel..."
 HTTP_RESPONSE=$(curl -s -w "%{http_code}" \
     -H "x-remote-node-id: on-prem-node" \
     -H "x-dst-cluster-uuid: on-prem" \
-    http://localhost:8085/on_prem_service)
+    http://127.0.0.1:8085/on_prem_service)
 
 HTTP_STATUS="${HTTP_RESPONSE: -3}"
 RESPONSE_BODY="${HTTP_RESPONSE%???}"

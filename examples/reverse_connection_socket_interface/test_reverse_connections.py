@@ -127,6 +127,10 @@ class ReverseConnectionTester:
         with open(config_file, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)
         
+        # Fix permissions so Docker can access the file
+        os.chmod(config_file, 0o644)
+        os.chmod(self.temp_dir, 0o755)
+        
         return config_file
     
     def start_docker_compose(self, on_prem_config: str = None) -> bool:
@@ -148,6 +152,7 @@ class ReverseConnectionTester:
             import shutil
             temp_cloud_config = os.path.join(self.temp_dir, "cloud-envoy.yaml")
             shutil.copy(CONFIG['cloud_config_file'], temp_cloud_config)
+            os.chmod(temp_cloud_config, 0o644)  # Fix permissions for Docker
             compose_config['services']['cloud-envoy']['volumes'] = [
                 f"{temp_cloud_config}:/etc/cloud-envoy.yaml"
             ]
@@ -156,10 +161,21 @@ class ReverseConnectionTester:
             dockerfile_xds = os.path.join(CONFIG['script_dir'], "Dockerfile.xds")
             temp_dockerfile_xds = os.path.join(self.temp_dir, "Dockerfile.xds")
             shutil.copy(dockerfile_xds, temp_dockerfile_xds)
+            os.chmod(temp_dockerfile_xds, 0o644)  # Fix permissions for Docker
+            
+            # Copy gRPC service files to temp directory
+            grpc_files = ["Dockerfile.grpc", "greeter.proto", "grpc_server.py"]
+            for grpc_file in grpc_files:
+                src_file = os.path.join(CONFIG['script_dir'], grpc_file)
+                temp_file = os.path.join(self.temp_dir, grpc_file)
+                if os.path.exists(src_file):
+                    shutil.copy(src_file, temp_file)
+                    os.chmod(temp_file, 0o644)  # Fix permissions for Docker
             
             temp_compose_file = os.path.join(self.temp_dir, "docker-compose.yaml")
             with open(temp_compose_file, 'w') as f:
                 yaml.dump(compose_config, f, default_flow_style=False)
+            os.chmod(temp_compose_file, 0o644)  # Fix permissions for Docker
             
             compose_file = temp_compose_file
         else:
@@ -167,7 +183,7 @@ class ReverseConnectionTester:
         
         # Start docker-compose in background with logs visible
         cmd = [
-            "docker-compose", "-f", compose_file, "up"
+            "docker", "compose", "-f", compose_file, "up", "-d"
         ]
         
         # If using a temporary compose file, run from temp directory, otherwise from docker_compose_dir
@@ -190,13 +206,15 @@ class ReverseConnectionTester:
             self.current_compose_file = compose_file
             self.current_compose_cwd = self.docker_compose_dir
         
+        # Wait for docker-compose process to complete and check exit code
+        exit_code = self.docker_compose_process.wait()
+        
+        if exit_code != 0:
+            logger.error(f"Docker Compose failed to start (exit code: {exit_code})")
+            return False
+        
         # Wait a moment for containers to be ready
         time.sleep(CONFIG['docker_startup_delay'])
-        
-        # Check if process is still running
-        if self.docker_compose_process.poll() is not None:
-            logger.error("Docker Compose failed to start")
-            return False
         
         return True
     
@@ -205,7 +223,7 @@ class ReverseConnectionTester:
         logger.info("Stopping Docker Compose services")
         
         cmd = [
-            "docker-compose", "-f", "docker-compose.yaml", "down"
+            "docker", "compose", "-f", "docker-compose.yaml", "down"
         ]
         
         process = subprocess.Popen(
@@ -269,7 +287,7 @@ class ReverseConnectionTester:
                 "x-remote-node-id": "on-prem-node",
                 "x-dst-cluster-uuid": "on-prem"
             }
-            # Use port 8081 (cloud-envoy's egress_listener) as specified in docker-compose
+            # Use port 8085 (cloud-envoy's egress_listener) as specified in docker-compose
             response = requests.get(
                 f"http://localhost:{port}/on_prem_service",
                 headers=headers,
@@ -284,6 +302,45 @@ class ReverseConnectionTester:
                 return False
         except requests.exceptions.RequestException as e:
             logger.error(f"Error testing reverse connection request: {e}")
+            return False
+    
+    def test_reverse_grpc_connection(self, port: int) -> bool:
+        """Test sending a gRPC request through reverse connection."""
+        try:
+            # Use grpcurl to test gRPC request through reverse connection
+            cmd = [
+                "grpcurl", 
+                "-plaintext",
+                "-proto", "greeter.proto",
+                "-import-path", CONFIG['script_dir'],
+                "-H", "x-remote-node-id: on-prem-node",
+                "-H", "x-dst-cluster-uuid: on-prem", 
+                "-d", '{"name": "TestUser"}',
+                f"localhost:{port}",
+                "greeter.Greeter/SayHello"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=15,
+                cwd=CONFIG['script_dir']  # Run from script directory
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Reverse gRPC connection successful: {result.stdout.strip()}")
+                return True
+            else:
+                logger.error(f"Reverse gRPC connection failed: {result.stderr.strip()}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("gRPC request timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Error testing reverse gRPC connection: {e}")
             return False
     
     def get_reverse_conn_listener_config(self) -> dict:
@@ -518,7 +575,7 @@ class ReverseConnectionTester:
             
             logger.info("Using docker-compose up to start cloud-envoy with consistent network config")
             result = subprocess.run(
-                ['docker-compose', '-f', compose_file, 'up', '-d', CONFIG['cloud_container']],
+                ['docker', 'compose', '-f', compose_file, 'up', '-d', CONFIG['cloud_container']],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
@@ -614,11 +671,17 @@ class ReverseConnectionTester:
             else:
                 raise Exception("Reverse connections failed to establish within timeout")
             
-            # Step 5: Test request through reverse connection
-            logger.info("Testing request through reverse connection")
+            # Step 5: Test requests through reverse connection
+            logger.info("Testing HTTP request through reverse connection")
             if not self.test_reverse_connection_request(CONFIG['cloud_egress_port']):  # cloud-envoy's egress port
-                raise Exception("Reverse connection request failed")
-            logger.info("✓ Reverse connection request successful")
+                raise Exception("Reverse connection HTTP request failed")
+            logger.info("✓ Reverse connection HTTP request successful")
+            
+            # Test gRPC request through reverse connection
+            logger.info("Testing gRPC request through reverse connection")
+            if not self.test_reverse_grpc_connection(CONFIG['cloud_egress_port']):  # cloud-envoy's egress port
+                raise Exception("Reverse connection gRPC request failed")
+            logger.info("✓ Reverse connection gRPC request successful")
             
             # Step 6: Stop cloud Envoy and verify reverse connections are down
             logger.info("Step 6: Stopping cloud Envoy to test connection recovery")
@@ -681,7 +744,8 @@ class ReverseConnectionTester:
         logger.info("Cleaning up")
         
         # Stop Docker Compose services
-        if self.docker_compose_process:
+        if self.docker_compose_process and self.docker_compose_process.poll() is None:
+            # Only terminate if the process is still running
             self.docker_compose_process.terminate()
             self.docker_compose_process.wait()
         
